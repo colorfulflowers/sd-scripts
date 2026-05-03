@@ -46,6 +46,7 @@ from library.custom_train_functions import (
     apply_masked_loss,
 )
 from library.utils import setup_logging, add_logging_arguments
+from kourkoutas_logging import get_real_optimizer, collect_kourkoutas_metrics
 
 setup_logging()
 import logging
@@ -108,6 +109,25 @@ class NetworkTrainer:
                     if "effective_lr" in opt.param_groups[i]:
                         logs[f"lr/d*eff_lr/{lr_desc}"] = opt.param_groups[i]["d"] * opt.param_groups[i]["effective_lr"]
 
+        # === Kourkoutas β logging ===
+        try:
+            real_opt = get_real_optimizer(optimizer, lr_scheduler)
+            k_metrics = collect_kourkoutas_metrics(real_opt)
+            if k_metrics is not None:
+                if "beta2_min_obs" in k_metrics:
+                    logs["k/beta2/min_obs"] = k_metrics["beta2_min_obs"]
+                if "beta2_max_obs" in k_metrics:
+                    logs["k/beta2/max_obs"] = k_metrics["beta2_max_obs"]
+                if "beta2_utilization" in k_metrics:
+                    logs["k/beta2/utilization"] = k_metrics["beta2_utilization"]
+                if "raw_mean" in k_metrics:
+                    logs["k/raw/mean"] = k_metrics["raw_mean"]
+                if "raw_max" in k_metrics:
+                    logs["k/raw/max"] = k_metrics["raw_max"]
+        except Exception as e:
+            # 学習停止を防ぐため握り潰す
+            logs["k/error"] = 1.0
+            
         return logs
 
     def step_logging(self, accelerator: Accelerator, logs: dict, global_step: int, epoch: int):

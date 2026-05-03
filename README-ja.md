@@ -1,3 +1,69 @@
+## Kourkoutas β₂ 挙動検証ログの追加
+■ 目的
+
+本変更の目的は、Prodigy_adv における kourkoutas_beta 有効時に、
+
+EMA（kourkoutas_r_ema）の影響により β₂ が抑制されず、
+設定された [beta2_min, beta2_max] のレンジを実際に使用できているか
+
+を定量的に検証することである。
+
+特に以下の挙動を確認対象とする：
+
+β₂が理論レンジ全体に振幅しているか
+EMAが過剰に働き、β₂が中央付近に固定されていないか
+勾配変動（grad_norm）に対して適切に反応しているか
+■ 背景
+
+Kourkoutas β₂ は以下の式で決定される：
+
+raw = grad_norm / (r_ema + tiny_spike)
+sun = raw / (1 + raw)
+beta2 = beta2_max - (beta2_max - beta2_min) * sun
+
+この構造により：
+
+raw ≪ 1 → β₂ ≈ beta2_max（安定）
+raw ≫ 1 → β₂ ≈ beta2_min（スパイク検出）
+
+となる。
+
+しかし、EMA（r_ema）が強すぎる場合：
+
+grad_norm ≈ r_ema
+→ raw ≈ 1
+→ β₂がレンジ中央に固定
+
+となり、動的制御が実質無効化される。
+
+■ 実装内容
+1. TensorBoardログ拡張
+
+train_network.py の generate_step_logs() に以下を追加：
+
+取得データ：
+
+dynamic_beta2（layerごと）
+kourkoutas_r_ema
+sum_sq_accumulator（grad proxy）
+2. 出力指標
+
+以下のログを追加：
+
+k/beta2/min_obs
+k/beta2/max_obs
+k/beta2/utilization
+k/raw/mean
+k/raw/max
+3. 最重要指標
+utilization = (max(beta2) - min(beta2)) / (beta2_max - beta2_min)
+■ 評価基準
+utilization	状態
+< 0.2	EMAが強すぎ（β₂固定）
+0.2〜0.6	部分的に機能
+0.6〜0.9	正常
+> 0.9	理想（フルレンジ使用）
+
 # sd-scripts
 
 [English](./README.md) / [日本語](./README-ja.md)
