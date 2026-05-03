@@ -1,5 +1,5 @@
 ## Kourkoutas β₂ 挙動検証ログの追加
-■ 目的
+#### 目的
 
 本変更の目的は、Prodigy_adv における kourkoutas_beta 有効時に、
 
@@ -13,7 +13,8 @@ EMA（kourkoutas_r_ema）の影響により β₂ が抑制されず、
 β₂が理論レンジ全体に振幅しているか
 EMAが過剰に働き、β₂が中央付近に固定されていないか
 勾配変動（grad_norm）に対して適切に反応しているか
-■ 背景
+
+#### 背景
 
 Kourkoutas β₂ は以下の式で決定される：
 
@@ -36,7 +37,7 @@ grad_norm ≈ r_ema
 
 となり、動的制御が実質無効化される。
 
-■ 実装内容
+#### 実装内容
 1. TensorBoardログ拡張
 
 train_network.py の generate_step_logs() に以下を追加：
@@ -59,10 +60,10 @@ k/raw/max
 utilization = (max(beta2) - min(beta2)) / (beta2_max - beta2_min)
 ■ 評価基準
 utilization	状態
-< 0.2	EMAが強すぎ（β₂固定）
-0.2〜0.6	部分的に機能
-0.6〜0.9	正常
-> 0.9	理想（フルレンジ使用）
+ < 0.2	EMAが強すぎ（β₂固定）
+ 0.2〜0.6	部分的に機能
+ 0.6〜0.9	正常
+ > 0.9	理想（フルレンジ使用）
 
 # sd-scripts
 
