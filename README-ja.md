@@ -70,6 +70,81 @@ utilization	状態
     0.6〜0.9	正常
     > 0.9	理想（フルレンジ使用）
 
+---
+
+## バケット別詳細ログの追加（per_layer_logs）
+
+#### 目的
+
+`k/raw/mean` と `k/raw/max` はすべてのバケットを集計した値であり、
+どのテンソル形状（バケット）でスパイクが発生しているかを特定できない。
+
+本追加により、バケット別の `sunspike` 比率・β₂・勾配ノルム・EMAノルムを
+TensorBoard 上で個別に観測できるようにする。
+
+これにより `ema_alpha` や `beta2_min` の調整を、
+全体統計ではなく実際にスパイクが起きているバケットに基づいて行えるようになる。
+
+#### 実装内容
+
+##### `kourkoutas_logging.py`
+
+`collect_kourkoutas_metrics()` のループを `k.layer_state.items()` に変更し、
+各バケットの詳細メトリクスをフラットな dict `per_layer_logs` として収集する。
+
+GPU 同期コストの回避：  
+`Kourkoutas.py` の `prepare_step()` が `layer_state` に保存する
+`last_pooled_grad_norm` / `last_ema_norm`（CPU float）を優先して使用する。
+これらが存在しない初回ステップのみ tensor から直接取得するフォールバックを使用する。
+
+バケットキー：  
+`layer_key_fn` のデフォルト（`tuple(p.shape)`）をそのまま文字列化して
+TensorBoard タグ名に使用する。モデルが変わっても形状ベースのキーは
+汎用的に機能するため、`layer_key_fn` の変更は不要。
+
+##### `train_network.py`
+
+既存の Kourkoutas ログブロック末尾に **1行のみ** 追加：
+
+    logs.update(k_metrics.get("per_layer_logs", {}))
+
+`per_layer_logs` が存在しない場合（Kourkoutas-β 無効時等）は
+空の dict が返るため、既存動作への影響はない。
+
+#### 追加される TensorBoard タグ
+
+バケット1つあたり以下の4タグが追加される。
+
+    k/layer/<shape>/sunspike   # grad_norm / (ema_norm + tiny_spike)
+    k/layer/<shape>/beta2      # dynamic_beta2 の現在値
+    k/layer/<shape>/grad_norm  # プールされた勾配ノルム
+    k/layer/<shape>/ema_norm   # EMA ノルム（r_ema）
+
+`<shape>` は例えば `(32, 320)`（rank=32, in_features=320 の LoRA down 行列）のような
+テンソル形状の文字列。
+
+LoRA（SD1.5 / SDXL）では典型的に 7 バケット × 4 タグ = 28 タグが追加される。
+900 ステップ学習時の追加データ量は約 1.7 MB。
+
+#### データ量見積もり
+
+| 学習形式 | 追加バケット数 | 追加タグ数/step | 900step 追加量 |
+|---|---|---|---|
+| LoRA（SD1.5 / SDXL） | 〜7 | 28 | 約 1.7 MB |
+| Full finetune SD1.5 | 〜20 | 80 | 約 4.8 MB |
+| Full finetune SDXL | 〜30 | 120 | 約 7.2 MB |
+
+#### 活用方法
+
+`k/raw/max` が `k/raw/mean` を大きく上回るステップがある場合、
+特定のバケットが sunspike を引き起こしている。
+TensorBoard の `k/layer/*/sunspike` を並べて表示することで
+どの形状のテンソルが支配的かを特定できる。
+
+`ema_alpha` の調整は、sunspike が高いバケットを確認してから行うこと。
+全体統計だけで調整すると、スパイクが均一でない場合に
+スパイクしていないバケットまで影響を受ける。
+
 # sd-scripts
 
 [English](./README.md) / [日本語](./README-ja.md)

@@ -124,6 +124,7 @@ class NetworkTrainer:
                     logs["k/raw/mean"] = k_metrics["raw_mean"]
                 if "raw_max" in k_metrics:
                     logs["k/raw/max"] = k_metrics["raw_max"]
+                logs.update(k_metrics.get("per_layer_logs", {}))
         except Exception as e:
             # 学習停止を防ぐため握り潰す
             logs["k/error"] = 1.0

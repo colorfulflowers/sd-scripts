@@ -17,7 +17,35 @@ def get_real_optimizer(optimizer, lr_scheduler):
 
 def collect_kourkoutas_metrics(optimizer):
     """
-    Kourkoutas β₂の挙動解析用データを収集
+    Kourkoutas β₂の挙動解析用データを収集。
+
+    グローバル統計に加え、バケット別の詳細メトリクスを per_layer_logs として返す。
+    per_layer_logs はそのまま logs.update() できるフラットな dict。
+
+    バケットキーは layer_key_fn が返す tuple（デフォルトはテンソル形状）を
+    文字列化したもの（例: "(32, 320)"）をタグ名に使用する。
+    モデルが変わっても形状ベースのキーは汎用的に機能するため、
+    layer_key_fn のデフォルト動作をそのまま利用する。
+
+    各バケットの値は prepare_step() が保存した CPU float を優先して使用し、
+    GPU 同期コストを発生させない。prepare_step() 前の初回ステップのみ
+    tensor から直接取得するフォールバックを使用する。
+
+    Returns:
+        dict | None: 以下のキーを含む dict。
+            グローバル統計（既存）:
+                "beta2_min_obs"     : float
+                "beta2_max_obs"     : float
+                "beta2_utilization" : float
+                "raw_mean"          : float
+                "raw_max"           : float
+            バケット別詳細（追加）:
+                "per_layer_logs"    : dict  TensorBoard タグ → float のフラット dict
+                    例:
+                        "k/layer/(32, 320)/sunspike"  : float
+                        "k/layer/(32, 320)/beta2"     : float
+                        "k/layer/(32, 320)/grad_norm" : float
+                        "k/layer/(32, 320)/ema_norm"  : float
     """
 
     if optimizer is None or not hasattr(optimizer, "kourkoutas_helper"):
@@ -41,10 +69,11 @@ def collect_kourkoutas_metrics(optimizer):
     beta2_min  = group.get(f"{prefix}beta2_min",  None)
     beta2_max  = (group.get(f"{prefix}betas") or (None, None))[1]
 
-    beta2_vals = []
-    raw_vals = []
+    beta2_vals   = []
+    raw_vals     = []
+    per_layer_logs = {}
 
-    for state in k.layer_state.values():
+    for layer_key, state in k.layer_state.items():
 
         beta2 = state.get("dynamic_beta2")
         ema   = state.get("kourkoutas_r_ema")
@@ -56,14 +85,35 @@ def collect_kourkoutas_metrics(optimizer):
         if isinstance(beta2, torch.Tensor):
             beta2 = beta2.mean().item()
 
-        r_ema     = ema.mean().item()
-        grad_norm = acc.sqrt().mean().item()
+        # prepare_step() が保存した CPU float を優先（GPU 同期不要）。
+        # 初回ステップ等でまだ保存されていない場合のみ tensor から取得。
+        grad_norm_cpu = state.get("last_pooled_grad_norm")
+        ema_norm_cpu  = state.get("last_ema_norm")
+
+        if grad_norm_cpu is not None and ema_norm_cpu is not None:
+            grad_norm = grad_norm_cpu
+            r_ema     = ema_norm_cpu
+        else:
+            r_ema     = ema.mean().item()
+            grad_norm = acc.sqrt().mean().item()
 
         beta2_vals.append(beta2)
 
         if r_ema > 0:
             # tiny_spike は sunspike比の分母安定化用。論文実装に合わせて group から取得。
-            raw_vals.append(grad_norm / (r_ema + tiny_spike))
+            sunspike = grad_norm / (r_ema + tiny_spike)
+            raw_vals.append(sunspike)
+        else:
+            sunspike = 0.0
+
+        # バケット別ログ: タグ名に layer_key を文字列化して使用。
+        # layer_key_fn のデフォルトは tuple(p.shape) なので
+        # "(32, 320)" のようなモデル非依存のタグになる。
+        tag = str(layer_key)
+        per_layer_logs[f"k/layer/{tag}/sunspike"]  = sunspike
+        per_layer_logs[f"k/layer/{tag}/beta2"]     = beta2
+        per_layer_logs[f"k/layer/{tag}/grad_norm"] = grad_norm
+        per_layer_logs[f"k/layer/{tag}/ema_norm"]  = r_ema
 
     if not beta2_vals:
         return None
@@ -84,5 +134,8 @@ def collect_kourkoutas_metrics(optimizer):
     if raw_vals:
         result["raw_mean"] = sum(raw_vals) / len(raw_vals)
         result["raw_max"]  = max(raw_vals)
+
+    if per_layer_logs:
+        result["per_layer_logs"] = per_layer_logs
 
     return result
